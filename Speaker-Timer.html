@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaker Timer</title>
+<!-- Speaker Timer: a single self-contained file. Works offline in any modern browser; nothing to install. -->
+<style>
+  :root {
+    --bg: #1d2127; --fg: #f4f5f7; --muted: rgba(244,245,247,.68);
+    --panel: rgba(0,0,0,.30); --chip: rgba(255,255,255,.13);
+    --chip-on: #ffffff; --chip-on-fg: #1d2127; --track: rgba(255,255,255,.18); --fill: rgba(255,255,255,.75);
+  }
+  body[data-phase="go"]   { --bg: #17784a; }
+  body[data-phase="warn"] { --bg: #f2b400; --fg: #1b1b1b; --muted: rgba(27,27,27,.72);
+                            --panel: rgba(255,255,255,.38); --chip: rgba(0,0,0,.10);
+                            --chip-on: #1b1b1b; --chip-on-fg: #f2b400; --track: rgba(0,0,0,.15); --fill: rgba(0,0,0,.65); }
+  body[data-phase="over"] { --bg: #b3261e; }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    transition: background-color .6s ease, color .6s ease;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  body.running[data-phase="over"] { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { background-color: #b3261e; } 50% { background-color: #7a140e; } }
+  @media (prefers-reduced-motion: reduce) { body.running[data-phase="over"] { animation: none; } }
+  body.hide-cursor, body.hide-cursor * { cursor: none !important; }
+
+  .progress { height: 1.4vh; min-height: 8px; background: var(--track); }
+  .progress > div { height: 100%; width: 100%; background: var(--fill); transition: width .25s linear; }
+
+  .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+           text-align: center; padding: 2vh 3vw; }
+  .name  { font-size: clamp(20px, 6vh, 64px); font-weight: 600; min-height: 1.25em; max-width: 92vw;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clock { font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -0.02em;
+           font-size: min(27vw, 50vh); }
+  .status { margin-top: 2.5vh; font-size: clamp(18px, 5vh, 52px); font-weight: 600; min-height: 1.25em; }
+
+  .bar { background: var(--panel); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px;
+         align-items: center; justify-content: center; transition: opacity .4s ease; }
+  .bar.hidden { opacity: 0; pointer-events: none; }
+  .group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 2px; }
+  button, input, select { font: 600 15px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--fg); }
+  .chip { background: var(--chip); border: 0; border-radius: 999px; padding: 8px 14px; cursor: pointer; }
+  .chip:hover { filter: brightness(1.15); }
+  .chip[aria-pressed="true"] { background: var(--chip-on); color: var(--chip-on-fg); }
+  .primary { background: var(--chip-on); color: var(--chip-on-fg); min-width: 96px; }
+  input[type="number"], input[type="text"], select {
+    background: var(--chip); border: 1px solid transparent; border-radius: 8px; padding: 7px 10px; outline: none;
+  }
+  input:focus, select:focus, button:focus-visible { border-color: var(--fg); outline: 2px solid var(--fg); outline-offset: 1px; }
+  input[type="number"] { width: 84px; }
+  input[type="text"] { width: 230px; }
+  select option { color: #111; background: #fff; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }
+  .hint { font-size: 12px; color: var(--muted); width: 100%; text-align: center; }
+  .note { font-size: 12px; color: var(--muted); min-height: 0; }
+
+  .help { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,.6); display: none; align-items: center;
+          justify-content: center; padding: 20px; z-index: 10; }
+  .help.open { display: flex; }
+  .help-card { background: #ffffff; color: #1b1b1b; max-width: 600px; width: 100%; max-height: 90vh; overflow: auto;
+               border-radius: 14px; padding: 24px 28px; font-size: 16px; line-height: 1.5; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+  .help-card h2 { margin: 0 0 6px; font-size: 22px; }
+  .help-card h3 { margin: 16px 0 4px; font-size: 16px; }
+  .help-card ol, .help-card ul { padding-left: 22px; margin: 6px 0; }
+  .help-card li { margin: 3px 0; }
+  .help-card .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+  .help-card .close { margin-top: 16px; background: #1b1b1b; color: #fff; border: 0; border-radius: 999px;
+                      padding: 9px 20px; font-weight: 600; cursor: pointer; }
+</style>
+</head>
+<body data-phase="idle">
+  <div class="progress" aria-hidden="true"><div id="fill"></div></div>
+
+  <main class="stage">
+    <div class="name" id="name"></div>
+    <div class="clock" id="clock" role="timer" aria-live="off">3:00</div>
+    <div class="status" id="status" aria-live="polite">Ready</div>
+  </main>
+
+  <section class="bar" id="bar" aria-label="Timer controls">
+    <div class="group" role="group" aria-label="Time per speaker">
+      <span class="label">Time per speaker</span>
+      <button class="chip preset" data-min="3">3 min</button>
+      <button class="chip preset" data-min="4">4 min</button>
+      <button class="chip preset" data-min="5">5 min</button>
+      <input id="custom" type="number" min="3" max="120" step="0.5" aria-label="Custom minutes (3 or more)" title="Custom minutes (3 or more)">
+    </div>
+
+    <div class="group">
+      <label class="label" for="warn">Turn yellow at</label>
+      <select id="warn">
+        <option value="10">10 seconds left</option>
+        <option value="30">30 seconds left</option>
+        <option value="60" selected>1 minute left</option>
+        <option value="90">1 minute 30 seconds left</option>
+        <option value="120">2 minutes left</option>
+      </select>
+    </div>
+
+    <div class="group">
+      <input id="nameInput" type="text" placeholder="Speaker name (optional)" aria-label="Speaker name">
+    </div>
+
+    <div class="group">
+      <button class="chip primary" id="start">Start</button>
+      <button class="chip" id="reset">Reset</button>
+      <button class="chip" id="next">Next speaker</button>
+      <button class="chip" id="full">Full screen</button>
+      <label class="check"><input type="checkbox" id="chime"> Chime at time's up</label>
+      <button class="chip" id="helpBtn">How to use</button>
+    </div>
+
+    <div class="hint">Shortcuts: Space start or pause &middot; R reset &middot; N next speaker &middot; F full screen &middot; 3 to 9 set minutes. Controls fade while the timer runs; move the mouse to bring them back.</div>
+    <div class="note" id="note"></div>
+  </section>
+
+  <div class="help" id="help" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+    <div class="help-card">
+      <h2 id="helpTitle">How to use the Speaker Timer</h2>
+      <p>A visual countdown so each speaker can see how much time they have left.</p>
+      <ul>
+        <li><span class="swatch" style="background:#17784a"></span><strong>Green</strong>: plenty of time.</li>
+        <li><span class="swatch" style="background:#f2b400"></span><strong>Yellow</strong>: time to start wrapping up.</li>
+        <li><span class="swatch" style="background:#b3261e"></span><strong>Red</strong>: time is up. The clock counts the extra time, for example +0:15.</li>
+      </ul>
+
+      <h3>Set it up</h3>
+      <ol>
+        <li>Choose the time per speaker: 3, 4 or 5 minutes, or type your own in the "Other" box (3 minutes minimum).</li>
+        <li>Choose when the screen turns yellow: anywhere from 10 seconds to 2 minutes before the end.</li>
+        <li>Optionally type the speaker's name, then press <strong>Start</strong> (or the Space bar).</li>
+        <li>When the speaker is done, press <strong>Next speaker</strong> (or N) and start again.</li>
+      </ol>
+
+      <h3>Show it in a Zoom meeting</h3>
+      <ol>
+        <li>Open this file in your web browser and leave the window open.</li>
+        <li>In Zoom, click <strong>Share Screen</strong> and pick the browser window that shows the timer.</li>
+        <li>To let others hear the chime, tick <strong>Share sound</strong> before sharing.</li>
+        <li>The controls fade away while the timer runs, so people only see the clock. Move your mouse to bring them back.</li>
+      </ol>
+      <p>This also works in Microsoft Teams, Google Meet or in a room on a projector.</p>
+
+      <h3>Keyboard shortcuts</h3>
+      <p>Space: start or pause &middot; R: reset &middot; N: next speaker &middot; F: full screen &middot; 3 to 9: set minutes &middot; Escape: close this panel</p>
+      <p>The same keys work on Windows, Mac and Chromebook computers.</p>
+
+      <p style="font-size:14px;color:#555">Nothing to install and no internet needed. Your time and warning choices are remembered on this computer.</p>
+      <button class="close" id="helpClose">Got it</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var body = document.body, clockEl = $('#clock'), statusEl = $('#status'), nameEl = $('#name'),
+      fillEl = $('#fill'), bar = $('#bar'), startBtn = $('#start'), customEl = $('#custom'),
+      warnEl = $('#warn'), nameInput = $('#nameInput'), chimeEl = $('#chime'), noteEl = $('#note');
+
+  var MIN_SEC = 180; // shortest allowed speaking time: 3 minutes
+  var durationSec = 180, warnSec = 60, running = false, startedAt = 0, banked = 0, chimed = false;
+  var tick = null, idleTimer = null, actx = null;
+
+  try {
+    var saved = JSON.parse(localStorage.getItem('speakerTimer') || '{}');
+    if (saved.d >= MIN_SEC) durationSec = saved.d;
+    if (saved.w > 0) warnSec = saved.w;
+    if (typeof saved.c === 'boolean') chimeEl.checked = saved.c;
+  } catch (e) {}
+  warnEl.value = String(warnSec);
+  if (!warnEl.value) { warnEl.value = '60'; warnSec = 60; }
+
+  function save() {
+    try { localStorage.setItem('speakerTimer', JSON.stringify({ d: durationSec, w: warnSec, c: chimeEl.checked })); } catch (e) {}
+  }
+  function now() { return performance.now(); }
+  function elapsedSec() { return (banked + (running ? now() - startedAt : 0)) / 1000; }
+  function fmt(sec) { var m = Math.floor(sec / 60), s = sec % 60; return m + ':' + (s < 10 ? '0' : '') + s; }
+
+  function syncPresets() {
+    var mins = durationSec / 60, matched = false;
+    document.querySelectorAll('.preset').forEach(function (b) {
+      var on = Number(b.dataset.min) === mins;
+      if (on) matched = true;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    customEl.value = matched ? '' : String(mins);
+    customEl.placeholder = 'Other';
+  }
+
+  function render() {
+    var el = elapsedSec(), remaining = durationSec - el, phase, text, status;
+    if (el <= 0) {
+      phase = 'idle'; text = fmt(Math.round(durationSec)); status = 'Ready';
+    } else if (remaining > warnSec) {
+      phase = 'go'; text = fmt(Math.ceil(remaining)); status = running ? 'Speaking' : 'Paused';
+    } else if (remaining > 0) {
+      phase = 'warn'; text = fmt(Math.ceil(remaining)); status = running ? 'Please start wrapping up' : 'Paused';
+    } else {
+      phase = 'over'; text = '+' + fmt(Math.floor(-remaining)); status = running ? "Time's up" : "Time's up \u00B7 Paused";
+      if (running && !chimed) { chimed = true; if (chimeEl.checked) playChime(); }
+    }
+    if (body.dataset.phase !== phase) body.dataset.phase = phase;
+    clockEl.textContent = text;
+    statusEl.textContent = status;
+    var frac = durationSec > 0 ? Math.max(0, Math.min(1, remaining / durationSec)) : 0;
+    fillEl.style.width = (el <= 0 ? 100 : frac * 100) + '%';
+    startBtn.textContent = running ? 'Pause' : (el > 0 ? 'Resume' : 'Start');
+    body.classList.toggle('running', running);
+    document.title = (el > 0 ? text + ' \u00B7 ' : '') + 'Speaker Timer';
+  }
+
+  function start() {
+    if (running) return;
+    ensureAudio();
+    running = true; startedAt = now();
+    tick = setInterval(render, 200);
+    render(); scheduleHide();
+  }
+  function pause() {
+    if (!running) return;
+    banked += now() - startedAt; running = false;
+    clearInterval(tick); tick = null;
+    render(); showBar();
+  }
+  function toggle() { running ? pause() : start(); }
+  function reset() {
+    running = false; banked = 0; chimed = false;
+    clearInterval(tick); tick = null;
+    render(); showBar();
+  }
+  function nextSpeaker() {
+    reset(); nameInput.value = ''; nameEl.textContent = ''; nameInput.focus();
+  }
+  function setMinutes(m) {
+    if (!(m > 0)) { syncPresets(); return; }
+    if (m * 60 < MIN_SEC) {
+      m = MIN_SEC / 60;
+      noteEl.textContent = 'The minimum is 3 minutes, so the timer was set to 3:00.';
+      setTimeout(function () { noteEl.textContent = ''; }, 4000);
+    }
+    durationSec = Math.round(m * 60);
+    if (elapsedSec() < durationSec) chimed = false;
+    syncPresets(); save(); render();
+  }
+
+  // Show and hide the control bar so viewers mostly see the clock while it runs
+  function showBar() {
+    bar.classList.remove('hidden'); body.classList.remove('hide-cursor');
+    clearTimeout(idleTimer);
+  }
+  function scheduleHide() {
+    showBar();
+    if (!running) return;
+    idleTimer = setTimeout(function () {
+      var a = document.activeElement;
+      var editing = a && ((a.tagName === 'INPUT' && (a.type === 'text' || a.type === 'number')) || a.tagName === 'SELECT');
+      if (running && !editing) {
+        bar.classList.add('hidden'); body.classList.add('hide-cursor');
+      }
+    }, 2500);
+  }
+  document.addEventListener('mousemove', scheduleHide);
+  document.addEventListener('touchstart', scheduleHide, { passive: true });
+
+  // Optional chime (played through this browser; tick "Share sound" in Zoom for others to hear it)
+  function ensureAudio() {
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+    } catch (e) {}
+  }
+  function playChime() {
+    if (!actx) return;
+    try {
+      var t = actx.currentTime;
+      [0, 0.35, 0.7].forEach(function (d, i) {
+        var o = actx.createOscillator(), g = actx.createGain();
+        o.type = 'sine'; o.frequency.value = i === 2 ? 660 : 880;
+        g.gain.setValueAtTime(0.0001, t + d);
+        g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.3);
+        o.connect(g); g.connect(actx.destination);
+        o.start(t + d); o.stop(t + d + 0.32);
+      });
+    } catch (e) {}
+  }
+
+  function fullScreen() {
+    var d = document, el = d.documentElement;
+    try {
+      if (d.fullscreenElement) { d.exitFullscreen(); return; }
+      var p = el.requestFullscreen ? el.requestFullscreen() : null;
+      if (p && p.catch) p.catch(function () { noteEl.textContent = "Full screen isn't allowed here. Use your browser's own full screen instead."; });
+    } catch (e) { noteEl.textContent = "Full screen isn't allowed here. Use your browser's own full screen instead."; }
+  }
+
+  // Wire up controls
+  document.querySelectorAll('.preset').forEach(function (b) {
+    b.addEventListener('click', function () { setMinutes(Number(b.dataset.min)); });
+  });
+  customEl.addEventListener('change', function () { setMinutes(parseFloat(customEl.value)); });
+  warnEl.addEventListener('change', function () { warnSec = Number(warnEl.value); save(); render(); });
+  chimeEl.addEventListener('change', function () { if (chimeEl.checked) ensureAudio(); save(); });
+  nameInput.addEventListener('input', function () { nameEl.textContent = nameInput.value; });
+  startBtn.addEventListener('click', toggle);
+  $('#reset').addEventListener('click', reset);
+  $('#next').addEventListener('click', nextSpeaker);
+  $('#full').addEventListener('click', fullScreen);
+
+  var helpEl = $('#help');
+  function openHelp() {
+    helpEl.classList.add('open'); showBar();
+    $('#helpClose').focus({ preventScroll: true });
+    helpEl.querySelector('.help-card').scrollTop = 0;
+  }
+  function closeHelp() { helpEl.classList.remove('open'); $('#helpBtn').focus(); }
+  $('#helpBtn').addEventListener('click', openHelp);
+  $('#helpClose').addEventListener('click', closeHelp);
+  helpEl.addEventListener('click', function (e) { if (e.target === helpEl) closeHelp(); });
+
+  document.addEventListener('keydown', function (e) {
+    if (helpEl.classList.contains('open')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeHelp(); }
+      return;
+    }
+    var t = e.target;
+    var typing = t && (t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'number')) || (t && t.tagName === 'SELECT');
+    if (e.key === 'Enter' && t === nameInput) { nameInput.blur(); return; }
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key.toLowerCase();
+    if (k === ' ' || k === 'spacebar') { e.preventDefault(); toggle(); }
+    else if (k === 'r') reset();
+    else if (k === 'n') nextSpeaker();
+    else if (k === 'f') fullScreen();
+    else if (/^[3-9]$/.test(k)) setMinutes(Number(k));
+    else return;
+    e.preventDefault();
+    scheduleHide();
+  });
+
+  syncPresets();
+  render();
+})();
+</script>
+</body>
+</html>
